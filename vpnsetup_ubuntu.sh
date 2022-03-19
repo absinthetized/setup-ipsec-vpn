@@ -216,10 +216,8 @@ install_vpn_pkgs() {
   bigecho "Installing packages required for the VPN..."
   (
     set -x
-    apt-get -yqq install libnss3-dev libnspr4-dev pkg-config \
-      libpam0g-dev libcap-ng-dev libcap-ng-utils libselinux1-dev \
-      libcurl4-nss-dev flex bison gcc make libnss3-tools \
-      libevent-dev libsystemd-dev uuid-runtime ppp xl2tpd >/dev/null
+    apt-get -yqq install libcap-ng-utils libnss3-tools \
+      libreswan uuid-runtime ppp xl2tpd >/dev/null
   ) || exiterr2
 }
 
@@ -248,86 +246,6 @@ get_helper_scripts() {
     [ -s "$sc" ] && chmod +x "$sc" && ln -s "/opt/src/$sc" /usr/bin 2>/dev/null
   done
   echo
-}
-
-get_swan_ver() {
-  SWAN_VER=4.6
-  base_url="https://github.com/hwdsl2/vpn-extras/releases/download/v1.0.0"
-  swan_ver_url="$base_url/v1-$os_type-$os_ver-swanver"
-  swan_ver_latest=$(wget -t 3 -T 15 -qO- "$swan_ver_url" | head -n 1)
-  if printf '%s' "$swan_ver_latest" | grep -Eq '^([3-9]|[1-9][0-9]{1,2})(\.([0-9]|[1-9][0-9]{1,2})){1,2}$'; then
-    SWAN_VER="$swan_ver_latest"
-  fi
-}
-
-check_libreswan() {
-  ipsec_ver=$(/usr/local/sbin/ipsec --version 2>/dev/null)
-  swan_ver_old=$(printf '%s' "$ipsec_ver" | sed -e 's/.*Libreswan U\?//' -e 's/\( (\|\/K\).*//')
-  ipsec_bin="/usr/local/sbin/ipsec"
-  if [ -n "$swan_ver_old" ] && printf '%s' "$ipsec_ver" | grep -qi 'libreswan' \
-    && [ "$(find "$ipsec_bin" -mmin -10080)" ]; then
-    return 0
-  fi
-  get_swan_ver
-  if [ -s "$ipsec_bin" ] && [ "$swan_ver_old" = "$SWAN_VER" ]; then
-    touch "$ipsec_bin"
-  fi
-  [ "$swan_ver_old" = "$SWAN_VER" ]
-}
-
-get_libreswan() {
-  if ! check_libreswan; then
-    bigecho "Downloading Libreswan..."
-    cd /opt/src || exit 1
-    swan_file="libreswan-$SWAN_VER.tar.gz"
-    swan_url1="https://github.com/libreswan/libreswan/archive/v$SWAN_VER.tar.gz"
-    swan_url2="https://download.libreswan.org/$swan_file"
-    (
-      set -x
-      wget -t 3 -T 30 -q -O "$swan_file" "$swan_url1" || wget -t 3 -T 30 -q -O "$swan_file" "$swan_url2"
-    ) || exit 1
-    /bin/rm -rf "/opt/src/libreswan-$SWAN_VER"
-    tar xzf "$swan_file" && /bin/rm -f "$swan_file"
-  else
-    bigecho "Libreswan $swan_ver_old is already installed, skipping..."
-  fi
-}
-
-install_libreswan() {
-  if ! check_libreswan; then
-    bigecho "Compiling and installing Libreswan, please wait..."
-    cd "libreswan-$SWAN_VER" || exit 1
-cat > Makefile.inc.local <<'EOF'
-WERROR_CFLAGS=-w -s
-USE_DNSSEC=false
-USE_DH2=true
-USE_NSS_KDF=false
-FINALNSSDIR=/etc/ipsec.d
-EOF
-    if ! grep -qs 'VERSION_CODENAME=' /etc/os-release; then
-cat >> Makefile.inc.local <<'EOF'
-USE_DH31=false
-USE_NSS_AVA_COPY=true
-USE_NSS_IPSEC_PROFILE=false
-USE_GLIBC_KERN_FLIP_HEADERS=true
-EOF
-    fi
-    if ! grep -qs IFLA_XFRM_LINK /usr/include/linux/if_link.h; then
-      echo "USE_XFRM_INTERFACE_IFLA_HEADER=true" >> Makefile.inc.local
-    fi
-    NPROCS=$(grep -c ^processor /proc/cpuinfo)
-    [ -z "$NPROCS" ] && NPROCS=1
-    (
-      set -x
-      make "-j$((NPROCS+1))" -s base >/dev/null && make -s install-base >/dev/null
-    )
-
-    cd /opt/src || exit 1
-    /bin/rm -rf "/opt/src/libreswan-$SWAN_VER"
-    if ! /usr/local/sbin/ipsec --version 2>/dev/null | grep -qF "$SWAN_VER"; then
-      exiterr "Libreswan $SWAN_VER failed to build."
-    fi
-  fi
 }
 
 create_vpn_config() {
@@ -696,8 +614,6 @@ vpnsetup() {
   install_vpn_pkgs
   install_fail2ban
   get_helper_scripts
-  get_libreswan
-  install_libreswan
   create_vpn_config
   update_sysctl
   update_iptables
